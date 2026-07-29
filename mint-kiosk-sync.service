@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-apply Ansible config to the Mint kiosk fleet
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/mint-rdp-kiosk
+ExecStart=/usr/bin/ansible-playbook site.yml --extra-vars "reboot_after_setup=false"
+User=root

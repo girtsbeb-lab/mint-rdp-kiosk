@@ -1,0 +1,386 @@
+---
+# site.yml
+# Configures a freshly-installed Linux Mint machine as a passwordless
+# kiosk terminal that boots into a Remmina RDP session against a
+# Windows host. Windows always prompts for its own credentials.
+#
+# Also sets up:
+#   - a dedicated admin account for remote management (SSH key only)
+#   - an optional, on-demand VNC service for visual remote access
+#   - a poweroff hotkey so the end user can shut the terminal down
+#   - a sequential hostname/label taken from the inventory
+#
+# Usage:
+#   ansible-playbook -i inventory.ini site.yml --ask-become-pass
+#
+- name: Configure Linux Mint as an RDP kiosk terminal
+  hosts: kiosks
+  become: true
+
+  vars:
+    autostart_dir: "/home/{{ kiosk_user }}/.config/autostart"
+    remmina_dir: "/home/{{ kiosk_user }}/.local/share/remmina"
+    remmina_profile: "{{ remmina_dir }}/windows-rdp.remmina"
+    script_path: "/usr/local/bin/start-rdp.sh"
+    shutdown_script: "/usr/local/bin/kiosk-shutdown.sh"
+
+  tasks:
+
+    # ---------------------------------------------------------------
+    # 0. Naming sequence
+    # ---------------------------------------------------------------
+    - name: Set system hostname from inventory (naming sequence)
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Ensure hostname resolves locally
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 {{ inventory_hostname }}"
+        state: present
+
+    # ---------------------------------------------------------------
+    # 1. Base packages
+    # ---------------------------------------------------------------
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - remmina
+          - remmina-plugin-rdp
+          - lightdm
+          - unclutter
+          - x11-xserver-utils   # xset, for disabling screen blanking
+          - openssh-server
+        state: present
+
+    - name: Install optional VNC server (for visual remote admin access)
+      apt:
+        name: x11vnc
+        state: present
+      when: enable_optional_vnc | bool
+
+    # ---------------------------------------------------------------
+    # 2. Kiosk user + passwordless autologin
+    # ---------------------------------------------------------------
+    - name: Create dedicated kiosk user
+      user:
+        name: "{{ kiosk_user }}"
+        password: "!"          # locked password, autologin only
+        shell: /bin/bash
+        groups: video,audio
+        append: true
+        create_home: true
+
+    - name: Ensure lightdm autologin drop-in directory exists
+      file:
+        path: /etc/lightdm/lightdm.conf.d
+        state: directory
+        mode: "0755"
+
+    - name: Configure LightDM autologin for kiosk user
+      copy:
+        dest: /etc/lightdm/lightdm.conf.d/50-autologin.conf
+        mode: "0644"
+        content: |
+          [Seat:*]
+          autologin-user={{ kiosk_user }}
+          autologin-user-timeout=0
+          autologin-session=cinnamon
+          user-session=cinnamon
+
+    - name: Fix GNOME keyring prompt on autologin (PAM auto-unlock)
+      copy:
+        dest: /etc/pam.d/lightdm-autologin
+        mode: "0644"
+        content: |
+          auth      required   pam_permit.so
+          auth      optional   pam_gnome_keyring.so
+          @include common-account
+          session   required   pam_limits.so
+          session   optional   pam_gnome_keyring.so auto_start
+          @include common-session
+
+    # ---------------------------------------------------------------
+    # 3. Remmina RDP profile (no saved password -> Windows prompts)
+    # ---------------------------------------------------------------
+    - name: Ensure Remmina profile directory exists
+      file:
+        path: "{{ remmina_dir }}"
+        state: directory
+        owner: "{{ kiosk_user }}"
+        group: "{{ kiosk_user }}"
+        mode: "0700"
+
+    - name: Deploy Remmina RDP connection profile
+      copy:
+        dest: "{{ remmina_profile }}"
+        owner: "{{ kiosk_user }}"
+        group: "{{ kiosk_user }}"
+        mode: "0600"
+        content: |
+          [remmina]
+          name=Windows RDP
+          protocol=RDP
+          server={{ windows_rdp_host }}
+          username={{ windows_rdp_user }}
+          domain={{ windows_rdp_domain }}
+          password=
+          resolution_mode=2
+          viewmode=4
+          window_maximize=1
+          disableclipboard=0
+          scale=2
+          cert_ignore=1
+
+    # ---------------------------------------------------------------
+    # 4. Autostart the RDP session on login
+    # ---------------------------------------------------------------
+    - name: Ensure autostart directory exists
+      file:
+        path: "{{ autostart_dir }}"
+        state: directory
+        owner: "{{ kiosk_user }}"
+        group: "{{ kiosk_user }}"
+        mode: "0755"
+
+    - name: Deploy start-rdp.sh wrapper script
+      copy:
+        dest: "{{ script_path }}"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Disable screen blanking so the login/RDP screen stays visible
+          xset s off -dpms
+          unclutter -idle 2 &
+          sleep 10
+          remmina -c "{{ remmina_profile }}"
+
+    - name: Create autostart entry for the RDP session
+      copy:
+        dest: "{{ autostart_dir }}/rdp-session.desktop"
+        owner: "{{ kiosk_user }}"
+        group: "{{ kiosk_user }}"
+        mode: "0644"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=RDP Session
+          Exec={{ script_path }}
+          X-GNOME-Autostart-enabled=true
+
+    # ---------------------------------------------------------------
+    # 5. Admin remote management (independent of the kiosk session)
+    # ---------------------------------------------------------------
+    - name: Create admin account for remote management
+      user:
+        name: "{{ admin_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: true
+        create_home: true
+
+    - name: Install admin's SSH public key
+      authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ admin_ssh_pubkey }}"
+        state: present
+
+    - name: Grant admin passwordless sudo (required since its password gets locked below)
+      copy:
+        dest: "/etc/sudoers.d/90-{{ admin_user }}-nopasswd"
+        mode: "0440"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        validate: "visudo -cf %s"
+
+    - name: Lock the admin account's password (SSH key only, no password login)
+      user:
+        name: "{{ admin_user }}"
+        password_lock: true
+
+    - name: Ensure SSH server is enabled and running
+      systemd:
+        name: ssh
+        enabled: true
+        state: started
+
+    - name: Harden SSH - disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: restart ssh
+
+    - name: Configure optional VNC as an on-demand systemd service (not auto-started)
+      when: enable_optional_vnc | bool
+      copy:
+        dest: /etc/systemd/system/kiosk-vnc.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=On-demand VNC for remote kiosk admin access
+          After=lightdm.service
+
+          [Service]
+          Environment=DISPLAY=:0
+          ExecStart=/usr/bin/x11vnc -display :0 -rfbport {{ vnc_port }} -localhost -nopw -once
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd units
+      systemd:
+        daemon_reload: true
+
+    # Start it remotely when needed with, e.g.:
+    #   ssh -L 5900:localhost:5900 admin@mint-term-01 sudo systemctl start kiosk-vnc
+    # "-localhost" + an SSH tunnel keeps VNC off the open network.
+
+    # ---------------------------------------------------------------
+    # 6. Let the end user shut the terminal down
+    # ---------------------------------------------------------------
+    - name: Deploy shutdown script
+      copy:
+        dest: "{{ shutdown_script }}"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          systemctl poweroff
+
+    - name: Ensure polkit rules.d directory exists (modern polkit)
+      file:
+        path: /etc/polkit-1/rules.d
+        state: directory
+        mode: "0755"
+
+    - name: Allow kiosk user to power off/reboot without a password (polkit)
+      copy:
+        dest: /etc/polkit-1/rules.d/90-kiosk-shutdown.rules
+        mode: "0644"
+        content: |
+          // Lets {{ kiosk_user }} power off / reboot without authentication.
+          polkit.addRule(function(action, subject) {
+              var powerActions = [
+                  "org.freedesktop.login1.power-off",
+                  "org.freedesktop.login1.power-off-multiple-sessions",
+                  "org.freedesktop.login1.reboot",
+                  "org.freedesktop.login1.reboot-multiple-sessions"
+              ];
+              if (powerActions.indexOf(action.id) !== -1 &&
+                  subject.user == "{{ kiosk_user }}") {
+                  return polkit.Result.YES;
+              }
+          });
+      notify: restart polkit
+
+    - name: Bind shutdown hotkey via Cinnamon custom keybinding
+      become: true
+      become_user: "{{ kiosk_user }}"
+      environment:
+        DISPLAY: ":0"
+      command: "{{ item }}"
+      loop:
+        - dbus-launch dconf write /org/cinnamon/desktop/keybindings/custom-keybindings "['/org/cinnamon/desktop/keybindings/custom-keybindings/shutdown/']"
+        - dbus-launch dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/shutdown/name "'Shutdown Terminal'"
+        - dbus-launch dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/shutdown/command "'{{ shutdown_script }}'"
+        - dbus-launch dconf write /org/cinnamon/desktop/keybindings/custom-keybindings/shutdown/binding "['{{ shutdown_hotkey }}']"
+      changed_when: false
+      failed_when: false
+
+    # ---------------------------------------------------------------
+    # 7. Automatic updates
+    # ---------------------------------------------------------------
+    - name: Install unattended-upgrades
+      apt:
+        name:
+          - unattended-upgrades
+          - update-notifier-common
+        state: present
+      when: auto_update_enabled | bool
+
+    - name: Enable daily apt update + unattended-upgrade
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+      when: auto_update_enabled | bool
+
+    - name: Configure unattended-upgrades (sources, reboot behaviour)
+      copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        mode: "0644"
+        content: |
+          Unattended-Upgrade::Origins-Pattern {
+                  "origin=LinuxMint";
+                  "origin=Ubuntu,label=Ubuntu";
+                  "origin=Ubuntu,label=Ubuntu-Security";
+          {% if auto_update_include_all %}
+                  "origin=*";
+          {% endif %}
+          };
+
+          // Kiosks auto-login and self-relaunch the RDP session, so an
+          // unattended reboot is safe -- it just comes back up ready to go.
+          Unattended-Upgrade::Automatic-Reboot "true";
+          Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+          Unattended-Upgrade::Automatic-Reboot-Time "{{ auto_update_reboot_time }}";
+
+          Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
+
+          // No mail server assumed on these machines.
+          Unattended-Upgrade::Mail "";
+      when: auto_update_enabled | bool
+
+    - name: Pin the daily update+reboot check to a quiet time (systemd timer override)
+      file:
+        path: /etc/systemd/system/apt-daily-upgrade.timer.d
+        state: directory
+        mode: "0755"
+      when: auto_update_enabled | bool
+
+    - name: Set apt-daily-upgrade.timer schedule
+      copy:
+        dest: /etc/systemd/system/apt-daily-upgrade.timer.d/override.conf
+        mode: "0644"
+        content: |
+          [Timer]
+          OnCalendar=
+          OnCalendar={{ auto_update_schedule }}
+          RandomizedDelaySec=10min
+          Persistent=true
+      notify: reload systemd and restart apt timer
+      when: auto_update_enabled | bool
+
+    - name: Reboot the kiosk to apply autologin + kiosk session
+      reboot:
+        reboot_timeout: 180
+      when: reboot_after_setup | default(true)
+
+  handlers:
+    - name: restart ssh
+      systemd:
+        name: ssh
+        state: restarted
+
+    - name: restart polkit
+      systemd:
+        name: polkit
+        state: restarted
+
+    - name: reload systemd and restart apt timer
+      systemd:
+        daemon_reload: true
+        name: apt-daily-upgrade.timer
+        state: restarted
+        enabled: true
