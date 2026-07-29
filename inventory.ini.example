@@ -1,0 +1,12 @@
+[kiosks]
+# Naming sequence: the inventory_hostname (left column) is what the
+# terminal will actually be named (/etc/hostname). Keep it sequential
+# and predictable, e.g. mint-term-01, mint-term-02, ...
+# Add one line per old PC once Mint is installed and SSH is reachable
+# with the admin account created during manual OS install.
+mint-term-01 ansible_host=192.168.1.101 ansible_user=admin
+mint-term-02 ansible_host=192.168.1.102 ansible_user=admin
+mint-term-03 ansible_host=192.168.1.103 ansible_user=admin
+
+[kiosks:vars]
+ansible_python_interpreter=/usr/bin/python3
