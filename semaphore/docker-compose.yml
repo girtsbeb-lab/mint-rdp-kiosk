@@ -1,0 +1,32 @@
+# docker-compose.yml for Semaphore UI
+# Web UI for running the mint-rdp-kiosk playbook. Uses BoltDB (embedded,
+# no separate database container needed) since this is a small fleet.
+#
+# Run from this directory: docker compose up -d
+# Then open: http://<control-server-ip>:3000
+services:
+  semaphore:
+    image: semaphoreui/semaphore:latest
+    container_name: semaphore
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      SEMAPHORE_DB_DIALECT: bolt
+      SEMAPHORE_ADMIN: admin
+      SEMAPHORE_ADMIN_NAME: Admin
+      SEMAPHORE_ADMIN_EMAIL: admin@localhost
+      # Change this before first run.
+      SEMAPHORE_ADMIN_PASSWORD: "CHANGE_ME"
+      # Generate with: head -c32 /dev/urandom | base64
+      SEMAPHORE_ACCESS_KEY_ENCRYPTION: "CHANGE_ME_TOO"
+    volumes:
+      - semaphore-data:/etc/semaphore
+      - semaphore-lib:/var/lib/semaphore
+      # Mount the existing playbook project read-only. Semaphore will
+      # reference this as a "Local" repository (no git needed).
+      - /opt/mint-rdp-kiosk:/ansible:ro
+
+volumes:
+  semaphore-data:
+  semaphore-lib:
