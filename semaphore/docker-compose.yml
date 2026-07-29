@@ -6,7 +6,10 @@
 # Then open: http://<control-server-ip>:3000
 services:
   semaphore:
-    image: semaphoreui/semaphore:latest
+    # Pinned to a known-stable release. "latest" has had startup-crashing
+    # regressions (e.g. "panic: unknown store type" on boot) -- check
+    # https://github.com/semaphoreui/semaphore/releases before bumping this.
+    image: semaphoreui/semaphore:v2.16.45
     container_name: semaphore
     restart: unless-stopped
     ports:
