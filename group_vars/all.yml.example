@@ -1,0 +1,46 @@
+---
+# ---- Windows RDP target ----
+windows_rdp_host: "192.168.1.50"
+
+# Pre-fills the username field on Windows' own login prompt.
+# Leave empty ("") if Windows should ask for the username too.
+windows_rdp_user: ""
+
+# Optional Windows/AD domain. Leave empty if not domain-joined.
+windows_rdp_domain: ""
+
+# ---- Linux Mint kiosk side ----
+kiosk_user: "kiosk"
+
+# ---- Admin remote management ----
+# Dedicated account for you (the admin) to reach the box remotely,
+# independent of the kiosk session. Key-based auth only, no password login.
+admin_user: "admin"
+admin_ssh_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-key-here admin@yourdomain"
+
+# Optional: install (but not auto-start) a VNC server you can start
+# remotely over SSH when you need to actually see the kiosk's screen.
+enable_optional_vnc: true
+vnc_port: 5900
+
+# ---- User shutdown hotkey ----
+# Global shortcut the kiosk user can press to power off the machine.
+# Default avoids Ctrl+Alt+Del/End since those are often intercepted by
+# the RDP session itself.
+shutdown_hotkey: "<Primary><Alt>F10"
+
+# ---- Terminal naming ----
+# Actual hostname is taken from the inventory (inventory_hostname),
+# e.g. mint-term-01. This prefix is only used for the on-screen label.
+terminal_name_prefix: "mint-term"
+
+# ---- Automatic updates ----
+auto_update_enabled: true
+# true = install all available updates (recommended for unattended kiosks
+#        that no one is patching by hand); false = security updates only.
+auto_update_include_all: true
+# Reboots are safe here: the machine just comes back up autologged-in and
+# straight into the RDP session. Pick a time nobody is using the terminal.
+auto_update_reboot_time: "03:30"
+# Day/time the daily update check itself runs, in systemd OnCalendar syntax.
+auto_update_schedule: "*-*-* 03:00:00"
