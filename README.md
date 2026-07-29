@@ -159,6 +159,52 @@ trigger a run — install **Semaphore UI**, a lightweight self-hosted web
 front-end for Ansible. Runs on the control server, alongside everything
 above (it just calls the same `site.yml`).
 
+## Semaphore Container Notes
+Semaphore runs inside Docker and uses BoltDB as its local database.
+All configuration and database files are stored inside the container under /etc/semaphore, which is mounted from Docker volumes defined in docker-compose.yml.
+
+## How Semaphore initializes
+On first startup, Semaphore automatically:
+Creates config.json inside /etc/semaphore
+Creates semaphore.boltdb after the admin user is initialized
+Stores runtime data under /var/lib/semaphore
+These files appear only after the container starts successfully.
+If the container exits immediately, the files will not be created.
+
+## Checking the container status
+
+docker ps -a | grep semaphore
+If the container shows Exited (1), it means Semaphore failed to start.
+
+## Viewing logs
+
+docker logs semaphore
+This is the most important command — it tells you exactly why Semaphore exited.
+
+## Inspecting the configuration directory inside the container
+
+docker exec -it semaphore ls -l /etc/semaphore
+Expected files:
+
+config.json
+semaphore.boltdb   # appears after admin initialization
+
+## Restarting Semaphore cleanly
+If Semaphore was previously started with incorrect environment variables (for example, MySQL settings), Docker volumes may contain invalid configuration.
+To reset Semaphore completely:
+
+docker stop semaphore
+docker rm semaphore
+docker volume rm semaphore-data
+docker volume rm semaphore-lib
+docker compose up -d
+This forces a clean initialization using BoltDB.
+
+## Accessing the UI
+After a successful start, open:
+
+http://<server-ip>:3000
+
 ### Install
 
 ```bash
